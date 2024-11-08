@@ -10,6 +10,8 @@ ARG source=download
 # build image
 FROM alpine as download
 
+ARG TARGETARCH
+
 # download jar
 RUN apk add --update openssl ca-certificates bash wget
 # REPOSITORY is releases or snapshots
@@ -19,8 +21,23 @@ ARG VERSION=RELEASE
 # see: https://oss.sonatype.org/nexus-restlet1x-plugin/default/docs/path__artifact_maven_redirect.html
 ARG REPOSITORY_URL=https://oss.sonatype.org/service/local/artifact/maven/redirect?r=${REPOSITORY}&g=org.mock-server&a=mockserver-netty&c=jar-with-dependencies&e=jar&v=${VERSION}
 RUN wget --max-redirect=10 -O mockserver-netty-jar-with-dependencies.jar "$REPOSITORY_URL"
+
 # add netty-tcnative-boringssl so file
-RUN wget --max-redirect=10 -O netty-tcnative-boringssl-static.jar "https://oss.sonatype.org/service/local/artifact/maven/redirect?r=releases&g=io.netty&a=netty-tcnative-boringssl-static&c=linux-x86_64&e=jar&v=2.0.50.Final"
+RUN <<EOF
+ARCH=${TARGETARCH}
+case ${ARCH} in
+    arm64)
+        ARCH=aarch_64
+        ;;
+    amd64)
+        ARCH=x86_64
+        ;;
+    *)
+        ;;
+esac
+wget --max-redirect=10 -O netty-tcnative-boringssl-static.jar "https://oss.sonatype.org/service/local/artifact/maven/redirect?r=releases&g=io.netty&a=netty-tcnative-boringssl-static&c=linux-${ARCH}&e=jar&v=2.0.50.Final"
+EOF
+
 RUN unzip netty-tcnative-boringssl-static.jar
 
 # build image
@@ -36,7 +53,17 @@ RUN unzip netty-tcnative-boringssl-static.jar
 FROM ${source} as intermediate
 
 # runtime image https://console.cloud.google.com/gcr/images/distroless/global/java17
-FROM gcr.io/distroless/java17:nonroot
+FROM gcr.io/distroless/java17-debian12:nonroot as distroless
+
+FROM distroless as distroless-amd64
+ENV JAR_ARCH=x86_64
+ENV LINUX_ARCH=x86_64
+
+FROM distroless as distroless-arm64
+ENV JAR_ARCH=aarch_64
+ENV LINUX_ARCH=aarch64
+
+FROM distroless-${TARGETARCH}
 
 # maintainer details
 MAINTAINER James Bloom "jamesdbloom@gmail.com"
@@ -46,7 +73,7 @@ EXPOSE 1080
 
 # copy in jar
 COPY --from=intermediate mockserver-netty-jar-with-dependencies.jar /
-COPY --from=intermediate META-INF/native/libnetty_tcnative_linux_x86_64.so /usr/lib/x86_64-linux-gnu/libnetty_tcnative_linux_x86_64.so
+COPY --from=intermediate META-INF/native/libnetty_tcnative_linux_${JAR_ARCH}.so /usr/lib/${LINUX_ARCH}-linux-gnu/libnetty_tcnative_linux_${JAR_ARCH}.so
 
 # don't run MockServer as root
 USER nonroot
